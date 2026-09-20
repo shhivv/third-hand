@@ -1,0 +1,324 @@
+name: Release
+
+# Manual release: builds, Developer ID-signs, notarizes and publishes.
+# Repository secrets: DEVELOPER_ID_APPLICATION_P12 (+ its _PASSWORD),
+# KEYCHAIN_PASSWORD, NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD.
+# The signing identity must match the one used for previous releases; see AGENTS.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_mode:
+        description: "Release a newly created tag, or an existing one"
+        type: choice
+        required: true
+        default: new
+        options:
+          - new
+          - existing
+      version:
+        description: "Version to tag and release, e.g. v0.2.0 (required when tag_mode=new)"
+        type: string
+        required: false
+        default: ""
+      existing_tag:
+        description: "Existing tag to release, e.g. v0.1.3 (required when tag_mode=existing)"
+        type: string
+        required: false
+        default: ""
+      notes_mode:
+        description: "Release notes source"
+        type: choice
+        required: true
+        default: auto
+        options:
+          - auto
+          - manual
+      notes:
+        description: "Release description (required when notes_mode=manual)"
+        type: string
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark the release as a pre-release"
+        type: boolean
+        required: false
+        default: false
+      draft:
+        description: "Create the release as a draft"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, notarize and publish
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Validate inputs
+        id: inputs
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG_MODE: ${{ inputs.tag_mode }}
+          VERSION: ${{ inputs.version }}
+          EXISTING_TAG: ${{ inputs.existing_tag }}
+          NOTES_MODE: ${{ inputs.notes_mode }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          fail() { printf '::error::%s\n' "$1"; exit 1; }
+
+          if [[ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            fail "Releases must be dispatched from $DEFAULT_BRANCH, but this run is from '$REF'. Pick $DEFAULT_BRANCH in the branch dropdown; a new tag would otherwise point at that branch."
+          fi
+
+          if [[ "$TAG_MODE" == "new" ]]; then
+            [[ -n "$VERSION" ]] || fail "tag_mode=new requires 'version' (for example v0.2.0)."
+            case "$VERSION" in
+              v*) TAG="$VERSION" ;;
+              *) TAG="v$VERSION" ;;
+            esac
+            if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              fail "'$VERSION' is not a semver version. Use MAJOR.MINOR.PATCH, optionally with a -prerelease suffix."
+            fi
+          else
+            [[ -n "$EXISTING_TAG" ]] || fail "tag_mode=existing requires 'existing_tag'. workflow_dispatch cannot build a dynamic list of tags; run 'git tag --sort=-v:refname' and pass one."
+            TAG="$EXISTING_TAG"
+          fi
+
+          if [[ "$NOTES_MODE" == "manual" ]]; then
+            [[ -n "$NOTES" ]] || fail "notes_mode=manual requires 'notes'."
+          fi
+
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'Using tag: %s\n' "$TAG"
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target commit
+        id: target
+        shell: bash
+        env:
+          TAG_MODE: ${{ inputs.tag_mode }}
+          TAG: ${{ steps.inputs.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$TAG_MODE" == "new" ]]; then
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              printf '::error::Tag %s already exists. Use tag_mode=existing to release it, or choose a new version.\n' "$TAG"
+              exit 1
+            fi
+            SHA="$(git rev-parse HEAD)"
+          else
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              printf '::error::Tag %s does not exist. Available tags:\n' "$TAG"
+              git tag --sort=-v:refname | head -20
+              exit 1
+            fi
+            git checkout --quiet "refs/tags/$TAG"
+            SHA="$(git rev-parse HEAD)"
+          fi
+
+          CORE="${TAG#v}"
+          CORE="${CORE%%-*}"
+          CORE="${CORE%%+*}"
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          if [[ "$CORE" != "$PLIST_VERSION" ]]; then
+            printf '::error::Tag %s implies version %s but Resources/Info.plist reports %s. Bump CFBundleShortVersionString and CFBundleVersion, then re-tag.\n' "$TAG" "$CORE" "$PLIST_VERSION"
+            exit 1
+          fi
+
+          printf 'sha=%s\n' "$SHA" >> "$GITHUB_OUTPUT"
+          printf 'Target commit %s, app version %s\n' "$SHA" "$CORE"
+
+      - name: Check signing secrets
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$P12_BASE64" ]] || missing+=("DEVELOPER_ID_APPLICATION_P12")
+          [[ -n "$P12_PASSWORD" ]] || missing+=("DEVELOPER_ID_APPLICATION_P12_PASSWORD")
+          [[ -n "$KEYCHAIN_PASSWORD" ]] || missing+=("KEYCHAIN_PASSWORD")
+          [[ -n "$NOTARY_APPLE_ID" ]] || missing+=("NOTARY_APPLE_ID")
+          [[ -n "$NOTARY_TEAM_ID" ]] || missing+=("NOTARY_TEAM_ID")
+          [[ -n "$NOTARY_PASSWORD" ]] || missing+=("NOTARY_PASSWORD")
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::Missing required secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+          printf 'All signing and notarization secrets are present.\n'
+
+      - name: Import signing certificate
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/thirdhand-signing.keychain-db"
+          P12_PATH="$RUNNER_TEMP/developer-id.p12"
+
+          if ! printf '%s' "$P12_BASE64" | base64 --decode > "$P12_PATH" 2>/dev/null; then
+            printf '%s' "$P12_BASE64" | base64 -D > "$P12_PATH"
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          # build.sh runs find-identity with no keychain arg, so add this keychain to the search list.
+          existing_keychains=()
+          while IFS= read -r keychain; do
+            existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/"//g')
+          security list-keychains -d user -s "$KEYCHAIN_PATH" ${existing_keychains[@]+"${existing_keychains[@]}"}
+
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          rm -f "$P12_PATH"
+
+          printf 'Keychains on the search list:\n'
+          security list-keychains -d user
+          printf 'Code signing identities available:\n'
+          security find-identity -v -p codesigning
+
+      - name: Store notarization credentials
+        shell: bash
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "thirdhand-notarize" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD"
+
+      - name: Build and notarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Scripts/notarize.sh "thirdhand-notarize"
+
+      - name: Report signed identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="Third Hand.app"
+          if [[ ! -d "$APP" ]]; then
+            printf '::error::Expected %s at the repository root, but it is missing.\n' "$APP"
+            exit 1
+          fi
+
+          DETAILS="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          printf '%s\n' "$DETAILS" | grep -E '^(Identifier|Authority|TeamIdentifier|Timestamp)' || true
+
+          AUTHORITY="$(printf '%s\n' "$DETAILS" | grep -m1 '^Authority=' | cut -d= -f2-)"
+          if [[ -z "$AUTHORITY" ]]; then
+            printf '::error::Could not read a signing authority from the built app.\n'
+            exit 1
+          fi
+
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          TEAM="$(printf '%s\n' "$DETAILS" | grep -m1 '^TeamIdentifier=' | cut -d= -f2-)"
+
+          {
+            printf '### Signed build\n\n'
+            printf '| Field | Value |\n| --- | --- |\n'
+            printf '| Version | %s |\n' "$VERSION"
+            printf '| Signing authority | %s |\n' "$AUTHORITY"
+            printf '| Team identifier | %s |\n' "$TEAM"
+            printf '\nConfirm the authority and team identifier match the identity that signed the previous releases (see AGENTS.md).\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release
+        shell: bash
+        env:
+          TAG_MODE: ${{ inputs.tag_mode }}
+          TAG: ${{ steps.inputs.outputs.tag }}
+          SHA: ${{ steps.target.outputs.sha }}
+          NOTES_MODE: ${{ inputs.notes_mode }}
+          NOTES: ${{ inputs.notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          if [[ "$NOTES_MODE" == "auto" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f target_commitish="$SHA" \
+              --jq .body > "$NOTES_FILE"
+          else
+            printf '%s\n' "$NOTES" > "$NOTES_FILE"
+          fi
+
+          shopt -s nullglob
+          assets=(dist/*.zip dist/*.zip.sha256)
+          shopt -u nullglob
+          if (( ${#assets[@]} == 0 )); then
+            printf '::error::No notarized artifacts found in dist/.\n'
+            exit 1
+          fi
+          printf 'Uploading:\n'
+          printf '  %s\n' "${assets[@]}"
+
+          TITLE="Third Hand $TAG"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            printf 'Release %s already exists; refreshing assets and notes.\n' "$TAG"
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE" \
+              --draft="$DRAFT" --prerelease="$PRERELEASE"
+          elif [[ "$TAG_MODE" == "new" ]]; then
+            gh release create "$TAG" "${assets[@]}" --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --draft="$DRAFT" --prerelease="$PRERELEASE" --target "$SHA"
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --draft="$DRAFT" --prerelease="$PRERELEASE"
+          fi
+
+          gh release view "$TAG" --json url,tagName,isDraft,isPrerelease,assets \
+            --jq '"Released \(.tagName) -> \(.url)", (.assets[] | "  asset: \(.name) (\(.size) bytes)")'
+
+      - name: Remove temporary keychain
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/thirdhand-signing.keychain-db"
+          if [[ -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
