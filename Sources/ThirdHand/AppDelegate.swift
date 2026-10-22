@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var permissionTimer: Timer?
     private var apiKey: String?
     private var codexCredentials: CodexCredentials?
+    private var codexSignIn: UUID?
     let chat = ChatController()
     lazy var benchmark = Benchmark(chat: chat)
     @Published var accessibilityReady = false
@@ -137,7 +138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func useCodex(_ tokens: CodexTokens) {
-        let credentials = CodexCredentials(tokens: tokens)
+        let signIn = UUID()
+        codexSignIn = signIn
+        // A dead refresh token signs out only the sign-in it belongs to, and the UI follows.
+        let credentials = CodexCredentials(tokens: tokens, forget: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.codexSignIn == signIn else { return }
+                Log.info("ChatGPT sign-in expired; signed out")
+                self.signOutOfChatGPT()
+            }
+        })
         codexCredentials = credentials
         codexAccount = tokens.email ?? "ChatGPT account"
         Task {
@@ -177,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func signOutOfChatGPT() {
         KeychainHelper.deleteCodexTokens()
         codexCredentials = nil
+        codexSignIn = nil
         codexAccount = nil
     }
 

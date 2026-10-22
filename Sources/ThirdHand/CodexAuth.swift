@@ -166,14 +166,22 @@ enum CodexAuth {
             throw CodexRefreshError(terminal: terminalRefreshErrors.contains(code),
                                     message: "ChatGPT authorization expired or was declined. Sign in again.")
         }
-        var identity: [String: Any] = [:]
-        if let idToken = raw["id_token"] as? String {
-            identity = try await IDToken.verify(idToken, clientID: clientID, nonce: nonce,
-                                                keys: keys ?? IDToken.remoteKeys(session: session))
-        } else if previous == nil {
-            throw CodexAuthError(message: "ChatGPT did not return an identity token. Sign in again.")
+        do {
+            var identity: [String: Any] = [:]
+            if let idToken = raw["id_token"] as? String {
+                identity = try await IDToken.verify(idToken, clientID: clientID, nonce: nonce,
+                                                    keys: keys ?? IDToken.remoteKeys(session: session))
+            } else if previous == nil {
+                throw CodexAuthError(message: "ChatGPT did not return an identity token. Sign in again.")
+            }
+            return try normalize(raw, identity: identity, clientID: clientID, previous: previous)
+        } catch {
+            // The server has already spent the old refresh token, so its replacement must survive the failure.
+            if let previous, let refresh = raw["refresh_token"] as? String, !refresh.isEmpty, refresh != previous.refresh {
+                throw CodexRotatedRefreshError(refresh: refresh, underlying: error)
+            }
+            throw error
         }
-        return try normalize(raw, identity: identity, clientID: clientID, previous: previous)
     }
 
     /// Opens the browser and waits for the loopback callback.
@@ -201,6 +209,13 @@ enum CodexAuth {
         issuedClientID = clientID
         return tokens
     }
+}
+
+/// A refresh succeeded at the server but its reply couldn't be used; `refresh` replaces the spent token.
+struct CodexRotatedRefreshError: LocalizedError {
+    let refresh: String
+    let underlying: Error
+    var errorDescription: String? { underlying.localizedDescription }
 }
 
 struct CodexRefreshError: LocalizedError {
@@ -304,13 +319,25 @@ actor CodexCredentials {
         do {
             let fresh = try await task.value
             tokens = fresh
-            try persist(fresh)
+            save(fresh)
             Log.info("ChatGPT token refreshed")
             return fresh
+        } catch let error as CodexRotatedRefreshError {
+            // Keep the expired access token so the next request refreshes again with the new refresh token.
+            tokens.refresh = error.refresh
+            save(tokens)
+            Log.info("ChatGPT token refresh unusable; kept the rotated refresh token")
+            throw error.underlying
         } catch let error as CodexRefreshError where error.terminal {
             forget()
             throw error
         }
+    }
+
+    /// The tokens in memory stay valid for this session even when Keychain can't store them.
+    private func save(_ tokens: CodexTokens) {
+        do { try persist(tokens) }
+        catch { Log.info("ChatGPT token save failed error_type=\(String(reflecting: type(of: error)))") }
     }
 }
 

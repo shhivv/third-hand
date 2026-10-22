@@ -217,11 +217,38 @@ final class CodexAuthTests: XCTestCase {
         var expired = fixtureTokens
         expired.expires = Date().addingTimeInterval(-10)
         let forgotten = SavedTokens()
+        let revoked = expired
         let credentials = CodexCredentials(tokens: expired, session: session, persist: { _ in },
-                                           forget: { forgotten.value = expired }, keys: testKeys)
+                                           forget: { forgotten.value = revoked }, keys: testKeys)
         do { _ = try await credentials.current(); XCTFail("Expected a refresh failure") }
         catch let error as CodexRefreshError { XCTAssertTrue(error.terminal) }
         XCTAssertNotNil(forgotten.value)
+    }
+
+    func testRotatedRefreshTokenSurvivesAnUnusableReply() async throws {
+        // The server spends refresh_1 and returns refresh_2, but the reply has no access token.
+        let session = StubProtocol.session { _ in (200, Data(#"{"refresh_token":"refresh_2"}"#.utf8)) }
+        var expired = fixtureTokens
+        expired.expires = Date().addingTimeInterval(-10)
+        let saved = SavedTokens()
+        let credentials = CodexCredentials(tokens: expired, session: session, persist: { saved.value = $0 },
+                                           forget: { XCTFail("A rotated token must not be forgotten") }, keys: testKeys)
+        do { _ = try await credentials.current(); XCTFail("Expected a refresh failure") }
+        catch { XCTAssertFalse(error is CodexRotatedRefreshError, "The underlying error is reported") }
+        XCTAssertEqual(saved.value?.refresh, "refresh_2")
+        _ = try? await credentials.current()
+        let form = String(decoding: StubProtocol.requests.last!.httpBody!, as: UTF8.self)
+        XCTAssertTrue(form.contains("refresh_token=refresh_2"))
+    }
+
+    func testFailedKeychainSaveStillReturnsRefreshedTokens() async throws {
+        let session = StubProtocol.session { _ in (200, try! JSONSerialization.data(withJSONObject: tokenResponse(nonce: nil))) }
+        var expired = fixtureTokens
+        expired.expires = Date().addingTimeInterval(-10)
+        let credentials = CodexCredentials(tokens: expired, session: session,
+                                           persist: { _ in throw CodexAuthError(message: "keychain") }, keys: testKeys)
+        let fresh = try await credentials.current()
+        XCTAssertEqual(fresh.refresh, "refresh_2")
     }
 }
 
