@@ -60,6 +60,21 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(reloaded.selection, id)
     }
 
+    func testUnreadableThreadsAreKeptAsideInsteadOfOverwritten() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = folder.appendingPathComponent("threads.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let original = Data(#"[{"id":"not a uuid"}]"#.utf8)
+        try original.write(to: url)
+        let store = ThreadStore(url: url)
+        XCTAssertTrue(store.threads.isEmpty)
+        store.newThread()
+        let aside = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix("threads.unreadable-") }
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(aside[0])), original)
+    }
+
     func testAgentPromptIncludesThreadContext() async throws {
         let planner = ContextPlanner()
         _ = try await CodexAgent(planner: planner, tier: .quick)

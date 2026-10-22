@@ -75,8 +75,12 @@ final class ThreadStore: ObservableObject {
 
     init(url: URL? = ThreadStore.defaultURL) {
         self.url = url
-        if let url, let data = try? Data(contentsOf: url),
-           let saved = try? JSONDecoder().decode([ChatThread].self, from: data) {
+        if let url, let data = try? Data(contentsOf: url) {
+            guard let saved = try? JSONDecoder().decode([ChatThread].self, from: data) else {
+                // Keep unreadable history aside so the next save doesn't overwrite it.
+                Self.setAside(url)
+                return
+            }
             // A task can't still be running after a relaunch.
             threads = saved.map { thread in
                 var thread = thread
@@ -94,6 +98,17 @@ final class ThreadStore: ObservableObject {
     nonisolated static var defaultURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Third Hand/threads.json")
+    }
+
+    nonisolated static func setAside(_ url: URL) {
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let aside = url.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).json")
+        do {
+            try FileManager.default.moveItem(at: url, to: aside)
+            Log.info("Threads unreadable; kept them at \(aside.lastPathComponent)")
+        } catch {
+            Log.info("Threads unreadable and couldn't be kept aside error_type=\(String(reflecting: type(of: error)))")
+        }
     }
 
     var sorted: [ChatThread] { threads.sorted { $0.updated > $1.updated } }
