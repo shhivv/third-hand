@@ -233,6 +233,11 @@ final class TaskRunner: ActionLayer {
     }
 
     /// `defaults write com.thirdhand.app Ultrafast -bool YES`: Jev drives background tasks directly (experiment).
+    /// A line break typed into a terminal runs what precedes it, bypassing the one-command-per-Return rule.
+    nonisolated static func submitsLines(_ text: String?) -> Bool {
+        text?.unicodeScalars.contains { CharacterSet.newlines.contains($0) } ?? false
+    }
+
     nonisolated static var ultrafastEnabled: Bool { UserDefaults.standard.bool(forKey: "Ultrafast") }
     nonisolated static let maxFastActions = 15
     /// `defaults write com.thirdhand.app DebugGrounding -bool YES` logs target and candidate labels locally.
@@ -478,6 +483,9 @@ final class TaskRunner: ActionLayer {
             guard isCurrent(observation) else { continue }
             do { try decision.validate(elements: observation.elements, hasScreenshot: false) }
             catch { return StepOutcome(status: "rejected", detail: error.localizedDescription, elements: latest) }
+            if decision.operation == "TYPE_TEXT", target.isTerminal, Self.submitsLines(decision.textValue) {
+                return StepOutcome(status: "rejected", detail: "Terminal text can't contain line breaks: each would run a command. Type one command, then press Return.", elements: latest)
+            }
             if decision.operation == "TYPE_TEXT", !target.isTerminal,
                let field = observation.elements.first(where: { String($0.id) == decision.targetIndex }),
                field.value == decision.textValue {

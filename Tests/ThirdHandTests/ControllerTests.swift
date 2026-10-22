@@ -4,6 +4,14 @@ import ApplicationServices
 
 @MainActor
 final class ControllerTests: XCTestCase {
+    func testTerminalTextWithLineBreaksIsDetected() {
+        XCTAssertTrue(TaskRunner.submitsLines("cd foo\nrm -rf build"))
+        XCTAssertTrue(TaskRunner.submitsLines("ls\r"))
+        XCTAssertTrue(TaskRunner.submitsLines("ls\u{2028}pwd"))
+        XCTAssertFalse(TaskRunner.submitsLines("git status --short"))
+        XCTAssertFalse(TaskRunner.submitsLines(nil))
+    }
+
     private func element(enabled: Bool = true) -> AccessibilityElement {
         AccessibilityElement(id: 1, role: "AXTextField", label: "Search", value: "", enabled: enabled,
                              actions: [], axElement: AXUIElementCreateSystemWide())
