@@ -201,7 +201,7 @@ private struct Sidebar: View {
                     ForEach(store.sorted) { thread in
                         ThreadRow(thread: thread, selected: store.selection == thread.id, catalog: chat.catalog)
                             .onTapGesture { store.selection = thread.id; setup.showingSettings = false }
-                            .contextMenu { Button("Delete Thread", role: .destructive) { store.delete(thread.id) } }
+                            .contextMenu { Button("Delete Thread", role: .destructive) { chat.deleteThread(thread.id) } }
                     }
                 }
                 .padding(.horizontal, 8)

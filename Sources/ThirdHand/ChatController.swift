@@ -48,6 +48,13 @@ final class ChatController: ObservableObject, TaskRunnerDelegate {
         focusRequest += 1
     }
 
+    /// Stops the thread's running task and drops its queued ones first: their Stop buttons go with the thread.
+    func deleteThread(_ id: UUID) {
+        for job in queue where job.threadID == id { stop(messageID: job.messageID, in: id) }
+        if let current, current.job.threadID == id { stop(messageID: current.job.messageID, in: id) }
+        store.delete(id)
+    }
+
     // MARK: - Sending
 
     /// Sends the draft: Return runs on screen, ⇧Return in the background.
