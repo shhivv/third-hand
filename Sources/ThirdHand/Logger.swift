@@ -1,7 +1,10 @@
 import Foundation
 
 enum Log {
-    private static let path = NSHomeDirectory() + "/Desktop/thirdhand.log"
+    /// Test runs log to a temporary file so they don't mix into the app's log.
+    private static let path = NSClassFromString("XCTestCase") == nil
+        ? NSHomeDirectory() + "/Desktop/thirdhand.log"
+        : NSTemporaryDirectory() + "thirdhand-tests.log"
 
     static func info(_ msg: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(msg)\n"
