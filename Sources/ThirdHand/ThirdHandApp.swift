@@ -18,6 +18,12 @@ struct ThirdHandApp: App {
                     appDelegate.showMain()
                 }
                 .keyboardShortcut("n")
+                Button("Delete All Threads…") {
+                    appDelegate.showMain()
+                    // The menu doesn't observe the store, so check here instead of disabling the item.
+                    if !appDelegate.chat.store.threads.isEmpty { appDelegate.chat.confirmingDeleteAll = true }
+                }
+                .keyboardShortcut(.delete, modifiers: [.command, .shift])
             }
             CommandMenu("Debug") {
                 Button("Run Benchmark") {

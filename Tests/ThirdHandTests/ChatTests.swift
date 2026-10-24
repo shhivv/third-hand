@@ -60,6 +60,18 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(reloaded.selection, id)
     }
 
+    func testDeleteAllRemovesEveryThreadAndPersists() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "/threads.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = ThreadStore(url: url)
+        store.newThread()
+        store.newThread()
+        store.deleteAll()
+        XCTAssertTrue(store.threads.isEmpty)
+        XCTAssertNil(store.selection)
+        XCTAssertTrue(ThreadStore(url: url).threads.isEmpty)
+    }
+
     func testUnreadableThreadsAreKeptAsideInsteadOfOverwritten() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let url = folder.appendingPathComponent("threads.json")

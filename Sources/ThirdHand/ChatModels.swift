@@ -130,6 +130,12 @@ final class ThreadStore: ObservableObject {
         save()
     }
 
+    func deleteAll() {
+        threads.removeAll()
+        selection = nil
+        save()
+    }
+
     func append(_ message: ChatMessage, to threadID: UUID) {
         update(threadID) { thread in
             if thread.messages.isEmpty, message.role == .user { thread.title = String(message.text.prefix(48)) }

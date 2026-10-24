@@ -55,6 +55,16 @@ final class ChatController: ObservableObject, TaskRunnerDelegate {
         store.delete(id)
     }
 
+    /// Set to ask before deleting every thread.
+    @Published var confirmingDeleteAll = false
+
+    func deleteAllThreads() {
+        for job in queue { stop(messageID: job.messageID, in: job.threadID) }
+        if let current { stop(messageID: current.job.messageID, in: current.job.threadID) }
+        store.deleteAll()
+        drafts.removeAll()
+    }
+
     // MARK: - Sending
 
     /// Sends the draft: Return runs on screen, ⇧Return in the background.

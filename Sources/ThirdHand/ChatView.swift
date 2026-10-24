@@ -193,15 +193,26 @@ private struct Sidebar: View {
             .padding(.leading, 16).padding(.trailing, 10)
             .padding(.top, 40).padding(.bottom, 12)
 
-            Text("THREADS").font(.system(size: 10, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.tertiary)
-                .padding(.horizontal, 16).padding(.bottom, 6)
+            HStack {
+                Text("THREADS").font(.system(size: 10, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.tertiary)
+                Spacer()
+                if !store.threads.isEmpty {
+                    Button("Clear All") { chat.confirmingDeleteAll = true }
+                        .buttonStyle(.plain).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.tertiary)
+                        .help("Delete all threads (⇧⌘⌫)")
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 6)
 
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(store.sorted) { thread in
                         ThreadRow(thread: thread, selected: store.selection == thread.id, catalog: chat.catalog)
                             .onTapGesture { store.selection = thread.id; setup.showingSettings = false }
-                            .contextMenu { Button("Delete Thread", role: .destructive) { chat.deleteThread(thread.id) } }
+                            .contextMenu {
+                                Button("Delete Thread", role: .destructive) { chat.deleteThread(thread.id) }
+                                Button("Delete All Threads…", role: .destructive) { chat.confirmingDeleteAll = true }
+                            }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -224,6 +235,11 @@ private struct Sidebar: View {
             .overlay(alignment: .top) { Rectangle().fill(Theme.border).frame(height: 1) }
         }
         .background(Theme.sidebar)
+        .confirmationDialog("Delete all \(store.threads.count) threads?", isPresented: $chat.confirmingDeleteAll) {
+            Button("Delete All", role: .destructive) { chat.deleteAllThreads() }
+        } message: {
+            Text("Running and queued tasks will be stopped. This can't be undone.")
+        }
     }
 }
 
